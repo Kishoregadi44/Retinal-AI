@@ -1,44 +1,33 @@
 import os
-import json
-import uuid
-import cv2
 import numpy as np
+import cv2
+import uuid
+import smtplib
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
+from email.message import EmailMessage
 from pathlib import Path
 from flask import Flask, render_template, redirect, url_for, request, flash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
-import tensorflow as tf
+from tensorflow.keras.models import load_model
 
-# Initialize Flask App
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'retinal_ai_secret_key_2026'
+app.config['SECRET_KEY'] = 'diabetes_ai_secure_key_99'
 
-# --- 1. FIREBASE CONFIGURATION ---
-# This looks for your service account key to connect to your database
-try:
-    if os.environ.get('FIREBASE_CONFIG'):
-        # For Render deployment
-        cred_json = json.loads(os.environ.get('FIREBASE_CONFIG'))
-        cred = credentials.Certificate(cred_json)
-    else:
-        # For Local VS Code development
-        cred = credentials.Certificate("serviceAccountKey.json")
+# --- FIREBASE INITIALIZATION ---
+#
+cred = credentials.Certificate("serviceAccountKey.json")
+if not firebase_admin._apps:
+    firebase_admin.initialize_app(cred)
+db = firestore.client()
 
-    if not firebase_admin._apps:
-        firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    print("Firebase connected successfully.")
-except Exception as e:
-    print(f"Error connecting to Firebase: {e}")
-
-# --- 2. AUTHENTICATION SETUP ---
 bcrypt = Bcrypt(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
+# --- USER CLASS ---
 class User(UserMixin):
     def __init__(self, user_id, name, email):
         self.id = user_id
@@ -53,31 +42,23 @@ def load_user(user_id):
         return User(user_id, data['name'], data['email'])
     return None
 
-# --- 3. AI MODEL LOADING ---
-# Path to your .h5 file inside the 'models' folder
-MODEL_PATH = os.path.join(os.getcwd(), 'models', 'diabetic_retinopathy_v1.h5')
-try:
-    # compile=False ensures the model loads even if TF versions vary
-    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-    print("AI Model loaded successfully.")
-except Exception as e:
-    print(f"AI Model load error: {e}")
-    model = None
-
+# --- AI SETUP ---
+#
+BASE_DIR = Path(__file__).resolve().parent
+MODEL_PATH = str(BASE_DIR / 'models' / 'diabetic_retinopathy_v1.h5')
+model = load_model(MODEL_PATH)
 class_names = ['High Risk', 'Low Risk', 'Medium Risk', 'Extreme Risk (Severe)']
 
-# --- 4. ROUTES ---
+# --- ROUTES ---
 
 @app.route('/')
 def home():
-    # If not logged in, go to login page
     return redirect(url_for('login'))
 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
         email = request.form['email']
-        # Check if user exists
         user_check = db.collection('users').where('email', '==', email).get()
         if len(user_check) > 0:
             flash('Email already registered.', 'danger')
@@ -91,7 +72,7 @@ def register():
             'password': hashed_pw,
             'created_at': firestore.SERVER_TIMESTAMP
         })
-        flash('Account created successfully! Please login.', 'success')
+        flash('Account created! Please login.', 'success')
         return redirect(url_for('login'))
     return render_template('register.html')
 
@@ -99,83 +80,85 @@ def register():
 def login():
     if request.method == 'POST':
         email = request.form['email']
-        password = request.form['password']
-        
         users_ref = db.collection('users').where('email', '==', email).limit(1).get()
         if users_ref:
             user_doc = users_ref[0]
             user_data = user_doc.to_dict()
-            if bcrypt.check_password_hash(user_data['password'], password):
+            if bcrypt.check_password_hash(user_data['password'], request.form['password']):
                 user_obj = User(user_doc.id, user_data['name'], user_data['email'])
                 login_user(user_obj)
                 return redirect(url_for('dashboard'))
-        
-        flash('Login Unsuccessful. Check email and password.', 'danger')
+        flash('Login failed. Check email and password.', 'danger')
     return render_template('login.html')
 
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    # Fetch scan history for the specific user
     try:
+        #
         scans_ref = db.collection('scans').where('user_id', '==', current_user.id)\
                       .order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
-        user_scans = [s.to_dict() for s in scans_ref]
-    except Exception as e:
-        print(f"Error fetching scans: {e}")
+        
         user_scans = []
-    
-    return render_template('dashboard.html', name=current_user.name, scans=user_scans)
+        for s in scans_ref:
+            data = s.to_dict()
+            # Safety checks for new features
+            data.setdefault('diet_note', 'No dietary notes available.')
+            data.setdefault('activity_note', 'No activity notes available.')
+            user_scans.append(data)
+            
+        return render_template('dashboard.html', name=current_user.name, scans=user_scans)
+    except Exception as e:
+        # Catch index errors while building
+        print(f"Dashboard Query Issue: {e}")
+        return render_template('dashboard.html', name=current_user.name, scans=[])
 
 @app.route('/predict', methods=['POST'])
 @login_required
 def predict():
-    if 'file' not in request.files:
-        flash('No file part', 'danger')
+    file = request.files.get('file')
+    if not file or file.filename == '':
+        flash("No file selected", "danger")
         return redirect(url_for('dashboard'))
     
-    file = request.files['file']
-    if file.filename == '':
-        flash('No selected file', 'danger')
-        return redirect(url_for('dashboard'))
-
-    if file and model:
-        # Save file securely
-        filename = f"{uuid.uuid4().hex}.png"
-        static_path = os.path.join(app.root_path, 'static')
-        if not os.path.exists(static_path):
-            os.makedirs(static_path)
-        
-        filepath = os.path.join(static_path, filename)
-        file.save(filepath)
-        
-        # Image Preprocessing
-        img = cv2.imread(filepath)
-        img = cv2.resize(img, (224, 224)).astype('float32') / 255.0
-        img_array = np.expand_dims(img, axis=0)
-        
-        # Prediction
-        prediction = model.predict(img_array)
-        result_idx = np.argmax(prediction)
-        final_result = class_names[result_idx]
-        confidence = round(float(np.max(prediction)) * 100, 2)
-
-        # Save record to Firestore
-        db.collection('scans').add({
-            'image_file': filename,
-            'result': final_result,
-            'confidence': confidence,
-            'user_id': current_user.id,
-            'timestamp': datetime.now()
-        })
-        
-        return render_template('results.html', 
-                               result=final_result, 
-                               confidence=confidence, 
-                               img=filename)
+    # 1. Processing
+    filename = f"{uuid.uuid4().hex}.png"
+    filepath = os.path.join(app.root_path, 'static', filename)
+    file.save(filepath)
     
-    flash('AI Model is not ready. Please wait.', 'warning')
-    return redirect(url_for('dashboard'))
+    img = cv2.imread(filepath)
+    img = cv2.resize(img, (224, 224)).astype('float32') / 255.0
+    
+    # 2. Prediction
+    prediction = model.predict(np.expand_dims(img, axis=0))
+    final_result = class_names[np.argmax(prediction)]
+    confidence_score = round(float(np.max(prediction)) * 100, 2)
+
+    # 3. Perception Notes logic
+    if "Low" in final_result:
+        diet = "Maintain a balanced diet rich in leafy greens and Omega-3."
+        activity = "30 mins of moderate cardio 5 days a week."
+    elif "Medium" in final_result:
+        diet = "Reduce sugar intake; focus on low-glycemic index foods."
+        activity = "Daily brisk walking and blood sugar monitoring."
+    else: 
+        diet = "Strict diabetic diet; consult a clinical nutritionist."
+        activity = "Light movement only; follow medical supervision."
+
+    # 4. Save to Cloud Firestore
+    scan_data = {
+        'image_file': filename, 
+        'result': final_result, 
+        'confidence': confidence_score,
+        'user_id': current_user.id,
+        'diet_note': diet,
+        'activity_note': activity,
+        'timestamp': datetime.now()
+    }
+    db.collection('scans').add(scan_data)
+    
+    return render_template('results.html', result=final_result, confidence=confidence_score, 
+                           img=filename, diet=diet, activity=activity)
 
 @app.route('/logout')
 def logout():
@@ -183,6 +166,5 @@ def logout():
     return redirect(url_for('login'))
 
 if __name__ == '__main__':
-    # Using port 5001 to avoid conflicts
-    port = int(os.environ.get("PORT", 5001))
-    app.run(host='0.0.0.0', port=port, debug=True)
+    # Changed to 5001 as requested
+    app.run(debug=True, port=5001)
