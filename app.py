@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 import uuid
 import smtplib
+import json
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
@@ -17,8 +18,15 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'diabetes_ai_secure_key_99'
 
 # --- FIREBASE INITIALIZATION ---
-#
-cred = credentials.Certificate("serviceAccountKey.json")
+# This block handles both local development and cloud deployment 
+if os.environ.get('FIREBASE_CONFIG'):
+    # Use the environment variable text you pasted into Render
+    cred_json = json.loads(os.environ.get('FIREBASE_CONFIG'))
+    cred = credentials.Certificate(cred_json)
+else:
+    # Use the local file on your computer 
+    cred = credentials.Certificate("serviceAccountKey.json")
+
 if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
 db = firestore.client()
@@ -43,7 +51,6 @@ def load_user(user_id):
     return None
 
 # --- AI SETUP ---
-#
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = str(BASE_DIR / 'models' / 'diabetic_retinopathy_v1.h5')
 model = load_model(MODEL_PATH)
@@ -95,21 +102,18 @@ def login():
 @login_required
 def dashboard():
     try:
-        #
         scans_ref = db.collection('scans').where('user_id', '==', current_user.id)\
                       .order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
         
         user_scans = []
         for s in scans_ref:
             data = s.to_dict()
-            # Safety checks for new features
             data.setdefault('diet_note', 'No dietary notes available.')
             data.setdefault('activity_note', 'No activity notes available.')
             user_scans.append(data)
             
         return render_template('dashboard.html', name=current_user.name, scans=user_scans)
     except Exception as e:
-        # Catch index errors while building
         print(f"Dashboard Query Issue: {e}")
         return render_template('dashboard.html', name=current_user.name, scans=[])
 
@@ -121,7 +125,6 @@ def predict():
         flash("No file selected", "danger")
         return redirect(url_for('dashboard'))
     
-    # 1. Processing
     filename = f"{uuid.uuid4().hex}.png"
     filepath = os.path.join(app.root_path, 'static', filename)
     file.save(filepath)
@@ -129,12 +132,10 @@ def predict():
     img = cv2.imread(filepath)
     img = cv2.resize(img, (224, 224)).astype('float32') / 255.0
     
-    # 2. Prediction
     prediction = model.predict(np.expand_dims(img, axis=0))
     final_result = class_names[np.argmax(prediction)]
     confidence_score = round(float(np.max(prediction)) * 100, 2)
 
-    # 3. Perception Notes logic
     if "Low" in final_result:
         diet = "Maintain a balanced diet rich in leafy greens and Omega-3."
         activity = "30 mins of moderate cardio 5 days a week."
@@ -145,7 +146,6 @@ def predict():
         diet = "Strict diabetic diet; consult a clinical nutritionist."
         activity = "Light movement only; follow medical supervision."
 
-    # 4. Save to Cloud Firestore
     scan_data = {
         'image_file': filename, 
         'result': final_result, 
@@ -166,6 +166,6 @@ def logout():
     return redirect(url_for('login'))
 
 if __name__ == '__main__':
-    import os
+    # Production port handling for Render 
     port = int(os.environ.get("PORT", 5001))
     app.run(host='0.0.0.0', port=port)
