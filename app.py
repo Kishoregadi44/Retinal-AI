@@ -1,13 +1,14 @@
 import os
+# CRITICAL: Force TensorFlow to use the legacy Keras 2 stack before other imports
+os.environ["TF_USE_LEGACY_KERAS"] = "1"
+
 import numpy as np
 import cv2
 import uuid
-import smtplib
 import json
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
-from email.message import EmailMessage
 from pathlib import Path
 from flask import Flask, render_template, redirect, url_for, request, flash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
@@ -18,13 +19,13 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = 'diabetes_ai_secure_key_99'
 
 # --- FIREBASE INITIALIZATION ---
-# This block handles both local development and cloud deployment 
+# Logic to handle both local development and Render deployment
 if os.environ.get('FIREBASE_CONFIG'):
-    # Use the environment variable text you pasted into Render
+    # Parse the JSON string from the Render environment variable
     cred_json = json.loads(os.environ.get('FIREBASE_CONFIG'))
     cred = credentials.Certificate(cred_json)
 else:
-    # Use the local file on your computer 
+    # Use the local file on your computer
     cred = credentials.Certificate("serviceAccountKey.json")
 
 if not firebase_admin._apps:
@@ -53,6 +54,7 @@ def load_user(user_id):
 # --- AI SETUP ---
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = str(BASE_DIR / 'models' / 'diabetic_retinopathy_v1.h5')
+# safe_mode=False helps with deserializing older Keras 2 layers in Keras 3 environments
 model = load_model(MODEL_PATH, safe_mode=False)
 class_names = ['High Risk', 'Low Risk', 'Medium Risk', 'Extreme Risk (Severe)']
 
@@ -166,6 +168,5 @@ def logout():
     return redirect(url_for('login'))
 
 if __name__ == '__main__':
-    # Production port handling for Render 
     port = int(os.environ.get("PORT", 5001))
     app.run(host='0.0.0.0', port=port)
