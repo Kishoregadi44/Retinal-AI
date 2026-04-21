@@ -53,7 +53,7 @@ def load_user(user_id):
 # --- AI SETUP ---
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = str(BASE_DIR / 'models' / 'diabetic_retinopathy_v1.h5')
-model = load_model(MODEL_PATH)
+model = load_model(MODEL_PATH, safe_mode=False)
 class_names = ['High Risk', 'Low Risk', 'Medium Risk', 'Extreme Risk (Severe)']
 
 # --- ROUTES ---
