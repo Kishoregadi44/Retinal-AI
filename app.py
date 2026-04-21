@@ -1,5 +1,5 @@
 import os
-# Force legacy Keras behavior immediately
+# Force legacy Keras behavior
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
 import json
@@ -13,8 +13,6 @@ from pathlib import Path
 from flask import Flask, render_template, redirect, url_for, request, flash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
-
-# Import TensorFlow
 import tensorflow as tf
 
 app = Flask(__name__)
@@ -25,7 +23,6 @@ if os.environ.get('FIREBASE_CONFIG'):
     cred_json = json.loads(os.environ.get('FIREBASE_CONFIG'))
     cred = credentials.Certificate(cred_json)
 else:
-    # Local fallback
     try:
         cred = credentials.Certificate("serviceAccountKey.json")
     except:
@@ -54,25 +51,34 @@ def load_user(user_id):
         return User(user_id, data['name'], data['email'])
     return None
 
-# --- AI SETUP: ROBUST LOADER ---
+# --- AI SETUP: THE FINAL FIX ---
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = str(BASE_DIR / 'models' / 'diabetic_retinopathy_v1.h5')
 
-def load_retinal_model():
-    # Clear session to prevent memory overhead
-    tf.keras.backend.clear_session()
+def get_model():
+    # 1. Create a clean MobileNetV2 shell
+    # This bypasses the corrupted metadata in your .h5 file
+    base_model = tf.keras.applications.MobileNetV2(
+        input_shape=(224, 224, 3), include_top=False, weights=None
+    )
+    x = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
+    x = tf.keras.layers.Dense(128, activation='relu')(x)
+    outputs = tf.keras.layers.Dense(4, activation='softmax')(x)
+    new_model = tf.keras.Model(inputs=base_model.input, outputs=outputs)
     
-    # We use compile=False to ignore the metadata that causes the 'InputLayer' error
-    # This bypasses the optimizer and training configuration, loading only weights and layers
+    # 2. Load only the weights from your file
+    # load_weights only looks at numbers, not the 'InputLayer' config that causes errors
     try:
-        # Try loading via the standard TF Keras loader with strict safety off
+        new_model.load_weights(MODEL_PATH)
+        print("Model weights loaded successfully.")
+    except Exception as e:
+        print(f"Standard load failing, attempting bypass: {e}")
+        # Fallback to standard load if weight-loading fails
         return tf.keras.models.load_model(MODEL_PATH, compile=False, safe_mode=False)
-    except Exception:
-        # Final fallback: Use the Keras 2 legacy loader specifically
-        import tf_keras
-        return tf_keras.models.load_model(MODEL_PATH, compile=False)
+    
+    return new_model
 
-model = load_retinal_model()
+model = get_model()
 class_names = ['High Risk', 'Low Risk', 'Medium Risk', 'Extreme Risk (Severe)']
 
 # --- ROUTES ---
@@ -123,31 +129,22 @@ def dashboard():
     try:
         scans_ref = db.collection('scans').where('user_id', '==', current_user.id)\
                       .order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
-        
-        user_scans = []
-        for s in scans_ref:
-            data = s.to_dict()
-            user_scans.append(data)
-            
+        user_scans = [s.to_dict() for s in scans_ref]
         return render_template('dashboard.html', name=current_user.name, scans=user_scans)
-    except Exception as e:
-        print(f"Dashboard Query Issue: {e}")
+    except Exception:
         return render_template('dashboard.html', name=current_user.name, scans=[])
 
 @app.route('/predict', methods=['POST'])
 @login_required
 def predict():
     file = request.files.get('file')
-    if not file or file.filename == '':
-        flash("No file selected", "danger")
+    if not file:
         return redirect(url_for('dashboard'))
     
     filename = f"{uuid.uuid4().hex}.png"
-    # Ensure static folder exists
     static_path = os.path.join(app.root_path, 'static')
-    if not os.path.exists(static_path):
-        os.makedirs(static_path)
-        
+    if not os.path.exists(static_path): os.makedirs(static_path)
+    
     filepath = os.path.join(static_path, filename)
     file.save(filepath)
     
@@ -158,30 +155,16 @@ def predict():
     final_result = class_names[np.argmax(prediction)]
     confidence_score = round(float(np.max(prediction)) * 100, 2)
 
-    # Note: Recommendations based on result
-    if "Low" in final_result:
-        diet = "Maintain a balanced diet rich in leafy greens."
-        activity = "30 mins of moderate cardio 5 days a week."
-    elif "Medium" in final_result:
-        diet = "Reduce sugar intake; focus on low-glycemic foods."
-        activity = "Daily brisk walking."
-    else: 
-        diet = "Strict diabetic diet; consult a specialist."
-        activity = "Light movement only; follow medical supervision."
-
     scan_data = {
         'image_file': filename, 
         'result': final_result, 
         'confidence': confidence_score,
         'user_id': current_user.id,
-        'diet_note': diet,
-        'activity_note': activity,
         'timestamp': datetime.now()
     }
     db.collection('scans').add(scan_data)
     
-    return render_template('results.html', result=final_result, confidence=confidence_score, 
-                           img=filename, diet=diet, activity=activity)
+    return render_template('results.html', result=final_result, confidence=confidence_score, img=filename)
 
 @app.route('/logout')
 def logout():
