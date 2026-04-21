@@ -1,5 +1,5 @@
 import os
-# Force legacy Keras behavior
+# This must be the very first line to tell TensorFlow to act like the old version
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
 import json
@@ -18,17 +18,14 @@ import tensorflow as tf
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'diabetes_ai_secure_key_99'
 
-# --- FIREBASE INITIALIZATION ---
+# --- FIREBASE ---
 if os.environ.get('FIREBASE_CONFIG'):
     cred_json = json.loads(os.environ.get('FIREBASE_CONFIG'))
     cred = credentials.Certificate(cred_json)
 else:
-    try:
-        cred = credentials.Certificate("serviceAccountKey.json")
-    except:
-        cred = None
+    cred = credentials.Certificate("serviceAccountKey.json")
 
-if cred and not firebase_admin._apps:
+if not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -36,7 +33,6 @@ bcrypt = Bcrypt(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
-# --- USER CLASS ---
 class User(UserMixin):
     def __init__(self, user_id, name, email):
         self.id = user_id
@@ -51,62 +47,23 @@ def load_user(user_id):
         return User(user_id, data['name'], data['email'])
     return None
 
-# --- AI SETUP: THE FINAL FIX ---
+# --- AI MODEL LOADING ---
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = str(BASE_DIR / 'models' / 'diabetic_retinopathy_v1.h5')
 
-def get_model():
-    # 1. Create a clean MobileNetV2 shell
-    # This bypasses the corrupted metadata in your .h5 file
-    base_model = tf.keras.applications.MobileNetV2(
-        input_shape=(224, 224, 3), include_top=False, weights=None
-    )
-    x = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
-    x = tf.keras.layers.Dense(128, activation='relu')(x)
-    outputs = tf.keras.layers.Dense(4, activation='softmax')(x)
-    new_model = tf.keras.Model(inputs=base_model.input, outputs=outputs)
-    
-    # 2. Load only the weights from your file
-    # load_weights only looks at numbers, not the 'InputLayer' config that causes errors
-    try:
-        new_model.load_weights(MODEL_PATH)
-        print("Model weights loaded successfully.")
-    except Exception as e:
-        print(f"Standard load failing, attempting bypass: {e}")
-        # Fallback to standard load if weight-loading fails
-        return tf.keras.models.load_model(MODEL_PATH, compile=False, safe_mode=False)
-    
-    return new_model
+# We use compile=False to avoid the "InputLayer" metadata error
+try:
+    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
+    print("Model loaded successfully with TF 2.15")
+except Exception as e:
+    print(f"Loading failed: {e}")
+    model = None
 
-model = get_model()
 class_names = ['High Risk', 'Low Risk', 'Medium Risk', 'Extreme Risk (Severe)']
-
-# --- ROUTES ---
 
 @app.route('/')
 def home():
     return redirect(url_for('login'))
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    if request.method == 'POST':
-        email = request.form['email']
-        user_check = db.collection('users').where('email', '==', email).get()
-        if len(user_check) > 0:
-            flash('Email already registered.', 'danger')
-            return redirect(url_for('register'))
-        
-        hashed_pw = bcrypt.generate_password_hash(request.form['password']).decode('utf-8')
-        user_ref = db.collection('users').document()
-        user_ref.set({
-            'name': request.form['name'],
-            'email': email,
-            'password': hashed_pw,
-            'created_at': firestore.SERVER_TIMESTAMP
-        })
-        flash('Account created! Please login.', 'success')
-        return redirect(url_for('login'))
-    return render_template('register.html')
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -120,32 +77,37 @@ def login():
                 user_obj = User(user_doc.id, user_data['name'], user_data['email'])
                 login_user(user_obj)
                 return redirect(url_for('dashboard'))
-        flash('Login failed. Check email and password.', 'danger')
+        flash('Login failed.', 'danger')
     return render_template('login.html')
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        hashed_pw = bcrypt.generate_password_hash(request.form['password']).decode('utf-8')
+        db.collection('users').add({
+            'name': request.form['name'],
+            'email': request.form['email'],
+            'password': hashed_pw,
+            'created_at': firestore.SERVER_TIMESTAMP
+        })
+        return redirect(url_for('login'))
+    return render_template('register.html')
 
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    try:
-        scans_ref = db.collection('scans').where('user_id', '==', current_user.id)\
-                      .order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
-        user_scans = [s.to_dict() for s in scans_ref]
-        return render_template('dashboard.html', name=current_user.name, scans=user_scans)
-    except Exception:
-        return render_template('dashboard.html', name=current_user.name, scans=[])
+    scans_ref = db.collection('scans').where('user_id', '==', current_user.id).stream()
+    user_scans = [s.to_dict() for s in scans_ref]
+    return render_template('dashboard.html', name=current_user.name, scans=user_scans)
 
 @app.route('/predict', methods=['POST'])
 @login_required
 def predict():
     file = request.files.get('file')
-    if not file:
-        return redirect(url_for('dashboard'))
+    if not file: return redirect(url_for('dashboard'))
     
     filename = f"{uuid.uuid4().hex}.png"
-    static_path = os.path.join(app.root_path, 'static')
-    if not os.path.exists(static_path): os.makedirs(static_path)
-    
-    filepath = os.path.join(static_path, filename)
+    filepath = os.path.join(app.root_path, 'static', filename)
     file.save(filepath)
     
     img = cv2.imread(filepath)
@@ -153,18 +115,17 @@ def predict():
     
     prediction = model.predict(np.expand_dims(img, axis=0))
     final_result = class_names[np.argmax(prediction)]
-    confidence_score = round(float(np.max(prediction)) * 100, 2)
+    confidence = round(float(np.max(prediction)) * 100, 2)
 
-    scan_data = {
+    db.collection('scans').add({
         'image_file': filename, 
         'result': final_result, 
-        'confidence': confidence_score,
+        'confidence': confidence,
         'user_id': current_user.id,
         'timestamp': datetime.now()
-    }
-    db.collection('scans').add(scan_data)
+    })
     
-    return render_template('results.html', result=final_result, confidence=confidence_score, img=filename)
+    return render_template('results.html', result=final_result, confidence=confidence, img=filename)
 
 @app.route('/logout')
 def logout():
