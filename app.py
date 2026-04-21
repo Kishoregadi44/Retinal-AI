@@ -1,5 +1,5 @@
 import os
-# 1. FORCE LEGACY KERAS BEFORE ANYTHING ELSE
+# Force legacy Keras behavior immediately
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
 import json
@@ -14,9 +14,8 @@ from flask import Flask, render_template, redirect, url_for, request, flash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
 
-# 2. IMPORT TENSORFLOW AND KERAS LEGACY
+# Import TensorFlow
 import tensorflow as tf
-import tf_keras
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'diabetes_ai_secure_key_99'
@@ -26,9 +25,13 @@ if os.environ.get('FIREBASE_CONFIG'):
     cred_json = json.loads(os.environ.get('FIREBASE_CONFIG'))
     cred = credentials.Certificate(cred_json)
 else:
-    cred = credentials.Certificate("serviceAccountKey.json")
+    # Local fallback
+    try:
+        cred = credentials.Certificate("serviceAccountKey.json")
+    except:
+        cred = None
 
-if not firebase_admin._apps:
+if cred and not firebase_admin._apps:
     firebase_admin.initialize_app(cred)
 db = firestore.client()
 
@@ -51,23 +54,23 @@ def load_user(user_id):
         return User(user_id, data['name'], data['email'])
     return None
 
-# --- AI SETUP: THE COMPATIBILITY FIX ---
+# --- AI SETUP: ROBUST LOADER ---
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = str(BASE_DIR / 'models' / 'diabetic_retinopathy_v1.h5')
 
-# We use a Custom Object scope to tell Keras to ignore the keywords it doesn't like
 def load_retinal_model():
+    # Clear session to prevent memory overhead
+    tf.keras.backend.clear_session()
+    
+    # We use compile=False to ignore the metadata that causes the 'InputLayer' error
+    # This bypasses the optimizer and training configuration, loading only weights and layers
     try:
-        # Clear any existing sessions
-        tf.keras.backend.clear_session()
-        
-        # Load using the tf_keras (Legacy) library specifically
-        # We wrap it in a custom object scope to ignore the 'optional' and 'batch_shape' bugs
-        with tf_keras.utils.custom_object_scope({'InputLayer': tf_keras.layers.InputLayer}):
-            return tf_keras.models.load_model(MODEL_PATH, compile=False)
-    except Exception as e:
-        print(f"Primary load failed, trying secondary: {e}")
+        # Try loading via the standard TF Keras loader with strict safety off
         return tf.keras.models.load_model(MODEL_PATH, compile=False, safe_mode=False)
+    except Exception:
+        # Final fallback: Use the Keras 2 legacy loader specifically
+        import tf_keras
+        return tf_keras.models.load_model(MODEL_PATH, compile=False)
 
 model = load_retinal_model()
 class_names = ['High Risk', 'Low Risk', 'Medium Risk', 'Extreme Risk (Severe)']
@@ -124,8 +127,6 @@ def dashboard():
         user_scans = []
         for s in scans_ref:
             data = s.to_dict()
-            data.setdefault('diet_note', 'No dietary notes available.')
-            data.setdefault('activity_note', 'No activity notes available.')
             user_scans.append(data)
             
         return render_template('dashboard.html', name=current_user.name, scans=user_scans)
@@ -142,7 +143,12 @@ def predict():
         return redirect(url_for('dashboard'))
     
     filename = f"{uuid.uuid4().hex}.png"
-    filepath = os.path.join(app.root_path, 'static', filename)
+    # Ensure static folder exists
+    static_path = os.path.join(app.root_path, 'static')
+    if not os.path.exists(static_path):
+        os.makedirs(static_path)
+        
+    filepath = os.path.join(static_path, filename)
     file.save(filepath)
     
     img = cv2.imread(filepath)
@@ -152,15 +158,16 @@ def predict():
     final_result = class_names[np.argmax(prediction)]
     confidence_score = round(float(np.max(prediction)) * 100, 2)
 
-    # Note: Keep your existing logic for diet/activity
-    diet = "Consult professional"
-    activity = "Consult professional"
+    # Note: Recommendations based on result
     if "Low" in final_result:
-        diet = "Maintain a balanced diet rich in leafy greens and Omega-3."
+        diet = "Maintain a balanced diet rich in leafy greens."
         activity = "30 mins of moderate cardio 5 days a week."
     elif "Medium" in final_result:
-        diet = "Reduce sugar intake; focus on low-glycemic index foods."
-        activity = "Daily brisk walking and blood sugar monitoring."
+        diet = "Reduce sugar intake; focus on low-glycemic foods."
+        activity = "Daily brisk walking."
+    else: 
+        diet = "Strict diabetic diet; consult a specialist."
+        activity = "Light movement only; follow medical supervision."
 
     scan_data = {
         'image_file': filename, 
