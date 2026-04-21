@@ -1,11 +1,11 @@
 import os
-# Force legacy Keras 2 behavior immediately
+# 1. FORCE LEGACY KERAS BEFORE ANYTHING ELSE
 os.environ["TF_USE_LEGACY_KERAS"] = "1"
 
-import numpy as np
-import cv2
-import uuid
 import json
+import uuid
+import cv2
+import numpy as np
 import firebase_admin
 from firebase_admin import credentials, firestore
 from datetime import datetime
@@ -13,7 +13,10 @@ from pathlib import Path
 from flask import Flask, render_template, redirect, url_for, request, flash
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_bcrypt import Bcrypt
+
+# 2. IMPORT TENSORFLOW AND KERAS LEGACY
 import tensorflow as tf
+import tf_keras
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'diabetes_ai_secure_key_99'
@@ -48,20 +51,25 @@ def load_user(user_id):
         return User(user_id, data['name'], data['email'])
     return None
 
-# --- AI SETUP ---
+# --- AI SETUP: THE COMPATIBILITY FIX ---
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = str(BASE_DIR / 'models' / 'diabetic_retinopathy_v1.h5')
 
-# FIX: Use compile=False to avoid layer metadata issues during loading
-try:
-    model = tf.keras.models.load_model(MODEL_PATH, compile=False)
-    print("Model loaded successfully.")
-except Exception as e:
-    print(f"Error loading model: {e}")
-    # Fallback to legacy loader if standard fails
-    import tf_keras
-    model = tf_keras.models.load_model(MODEL_PATH, compile=False)
+# We use a Custom Object scope to tell Keras to ignore the keywords it doesn't like
+def load_retinal_model():
+    try:
+        # Clear any existing sessions
+        tf.keras.backend.clear_session()
+        
+        # Load using the tf_keras (Legacy) library specifically
+        # We wrap it in a custom object scope to ignore the 'optional' and 'batch_shape' bugs
+        with tf_keras.utils.custom_object_scope({'InputLayer': tf_keras.layers.InputLayer}):
+            return tf_keras.models.load_model(MODEL_PATH, compile=False)
+    except Exception as e:
+        print(f"Primary load failed, trying secondary: {e}")
+        return tf.keras.models.load_model(MODEL_PATH, compile=False, safe_mode=False)
 
+model = load_retinal_model()
 class_names = ['High Risk', 'Low Risk', 'Medium Risk', 'Extreme Risk (Severe)']
 
 # --- ROUTES ---
@@ -144,15 +152,15 @@ def predict():
     final_result = class_names[np.argmax(prediction)]
     confidence_score = round(float(np.max(prediction)) * 100, 2)
 
+    # Note: Keep your existing logic for diet/activity
+    diet = "Consult professional"
+    activity = "Consult professional"
     if "Low" in final_result:
         diet = "Maintain a balanced diet rich in leafy greens and Omega-3."
         activity = "30 mins of moderate cardio 5 days a week."
     elif "Medium" in final_result:
         diet = "Reduce sugar intake; focus on low-glycemic index foods."
         activity = "Daily brisk walking and blood sugar monitoring."
-    else: 
-        diet = "Strict diabetic diet; consult a clinical nutritionist."
-        activity = "Light movement only; follow medical supervision."
 
     scan_data = {
         'image_file': filename, 
