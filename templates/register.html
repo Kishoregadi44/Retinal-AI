@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Register | Diabetes AI</title>
+</head>
+<body class="bg-slate-50 flex items-center justify-center min-h-screen p-6">
+    <div class="bg-white p-10 rounded-3xl shadow-xl max-w-md w-full border border-slate-100">
+        <h2 class="text-3xl font-bold text-blue-900 mb-2">Sign Up</h2>
+        <p class="text-slate-500 mb-6 text-sm">Create an account to start your AI diagnostic journey.</p>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            {% for category, message in messages %}
+              <div class="mb-6 p-4 rounded-xl text-sm font-bold {% if category == 'danger' %}bg-rose-50 text-rose-600 border border-rose-100{% else %}bg-emerald-50 text-emerald-600 border border-emerald-100{% endif %}">
+                {{ message }}
+              </div>
+            {% endfor %}
+          {% endif %}
+        {% endwith %}
+
+        <form method="POST" class="space-y-4">
+            <input type="text" name="name" placeholder="Full Name" required 
+                   class="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500">
+            <input type="email" name="email" placeholder="Email Address" required 
+                   class="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500">
+            
+            <div class="relative">
+                <input type="password" id="regPassword" name="password" placeholder="Create Password" required 
+                       class="w-full p-4 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500">
+                <button type="button" onclick="togglePassword('regPassword', 'regEyeIcon')" class="absolute right-4 top-4 text-slate-400 hover:text-blue-600">
+                    <span id="regEyeIcon">👁️</span>
+                </button>
+            </div>
+
+            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-blue-100">
+                Create Account
+            </button>
+        </form>
+        <p class="mt-8 text-center text-sm text-slate-500">Already a patient? <a href="/login" class="text-blue-600 font-bold hover:underline">Log In</a></p>
+    </div>
+
+    <script>
+        function togglePassword(inputId, iconId) {
+            const input = document.getElementById(inputId);
+            const icon = document.getElementById(iconId);
+            if (input.type === "password") {
+                input.type = "text";
+                icon.innerText = "🙈";
+            } else {
+                input.type = "password";
+                icon.innerText = "👁️";
+            }
+        }
+    </script>
+</body>
+</html>

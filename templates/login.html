@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+    <title>Login | RetinalAI</title>
+    <style>
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background: radial-gradient(circle at top right, #eff6ff, #f8fafc); }
+        .glass-card { background: rgba(255, 255, 255, 0.8); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.3); }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-6">
+    <div class="glass-card p-10 rounded-[2.5rem] shadow-2xl max-w-md w-full transition-all duration-500 hover:shadow-blue-200/50">
+        <div class="text-center mb-10">
+            <div class="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-2xl shadow-lg mb-4 transform -rotate-6">
+                <span class="text-3xl text-white">👁️</span>
+            </div>
+            <h1 class="text-3xl font-extrabold text-slate-900 tracking-tight">Retinal<span class="text-blue-600">AI</span></h1>
+            <p class="text-slate-500 mt-2 font-medium">Secure Clinical Portal</p>
+        </div>
+        
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}{% for category, message in messages %}
+            <div class="mb-6 p-4 rounded-2xl text-sm font-bold flex items-center gap-3 animate-pulse
+                {% if category == 'danger' %} bg-rose-50 text-rose-600 border border-rose-100 {% else %} bg-emerald-50 text-emerald-600 border border-emerald-100 {% endif %}">
+                <span>{% if category == 'danger' %}⚠️{% else %}✅{% endif %}</span> {{ message }}
+            </div>
+          {% endfor %}{% endif %}
+        {% endwith %}
+
+        <form method="POST" class="space-y-5">
+            <div>
+                <label class="text-xs font-bold text-slate-400 uppercase tracking-widest ml-1">Email Address</label>
+                <input type="email" name="email" required class="w-full p-4 mt-1 bg-white border border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all">
+            </div>
+            <div class="relative">
+                <div class="flex justify-between items-center ml-1">
+                    <label class="text-xs font-bold text-slate-400 uppercase tracking-widest">Password</label>
+                    <a href="/forgot_password" class="text-xs text-blue-600 hover:underline font-bold">Forgot?</a>
+                </div>
+                <input type="password" id="password" name="password" required class="w-full p-4 mt-1 bg-white border border-slate-200 rounded-2xl outline-none focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 transition-all">
+                <button type="button" onclick="togglePassword('password', 'eyeIcon')" class="absolute right-4 top-10 text-slate-400 hover:text-blue-600">
+                    <span id="eyeIcon">👁️</span>
+                </button>
+            </div>
+            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 rounded-2xl transition-all shadow-xl shadow-blue-200 active:scale-95">Sign In</button>
+        </form>
+        <p class="mt-8 text-center text-sm text-slate-500 font-medium">New clinician? <a href="/register" class="text-blue-600 font-bold hover:underline">Create Account</a></p>
+    </div>
+    <script>
+        function togglePassword(inputId, iconId) {
+            const input = document.getElementById(inputId);
+            const icon = document.getElementById(iconId);
+            if (input.type === "password") { input.type = "text"; icon.innerText = "🙈"; }
+            else { input.type = "password"; icon.innerText = "👁️"; }
+        }
+    </script>
+</body>
+</html>

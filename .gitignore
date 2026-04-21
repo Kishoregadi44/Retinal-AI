@@ -1,0 +1,5 @@
+serviceAccountKey.json
+.vscode/
+dataset/
+__pycache__/
+static/*.png
